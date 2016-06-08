@@ -1,0 +1,22 @@
+Source: python-confluent-kafka
+Maintainer:  --Andrew Otto (WMF) <otto@wikimedia.org>
+Section: python
+Priority: optional
+Build-Depends: debhelper (>= 9),
+  python-all (>= 2.7), python-setuptools, python-dev,
+  python3-all, python3-setuptools, python3-dev,
+  librdkafka-dev (>= 0.9.1), dh-python
+Homepage: https://github.com/confluentinc/confluent-kafka-python
+Standards-Version: 3.9.3
+
+Package: python-confluent-kafka
+Architecture: any
+Depends: ${misc:Depends}, ${python:Depends}, librdkafka1 (>= 0.9.1)
+Provides: ${python:Provides}
+Description: Confluent's Apache Kafka Python client built on librdkafka
+
+Package: python3-confluent-kafka
+Architecture: any
+Depends: ${misc:Depends}, ${python3:Depends}, librdkafka1 (>= 0.9.1)
+Provides: ${python3:Provides}
+Description: Confluent's Apache Kafka Python client built on librdkafka

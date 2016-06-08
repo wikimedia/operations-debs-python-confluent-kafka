@@ -1,0 +1,5 @@
+python-confluent-kafka (0.9.1-1) unstable; urgency=low
+
+  * Upstream release of 0.9.1
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Wed, 8 Jun 2016 21:06:39 +0000
