@@ -78,11 +78,28 @@ The Python bindings also provide some additional configuration properties:
 * ``default.topic.config``: value is a dict of topic-level configuration
   properties that are applied to all used topics for the instance.
 
-* ``on_delivery`` (**Producer**): value is a Python function reference
+* ``error_cb(kafka.KafkaError)``: Callback for generic/global error events. This callback is served by
+  poll().
+
+* ``on_delivery(kafka.KafkaError, kafka.Message)`` (**Producer**): value is a Python function reference
   that is called once for each produced message to indicate the final
   delivery result (success or failure).
   This property may also be set per-message by passing ``callback=callable``
   (or ``on_delivery=callable``) to the confluent_kafka.Producer.produce() function.
 
-* ``on_commit`` (**Consumer**): Callback used to indicate success or failure
+* ``on_commit(kafka.KafkaError, list(kafka.TopicPartition))`` (**Consumer**): Callback used to indicate success or failure
   of commit requests.
+
+Changelog
+=========
+
+Version 3.0.1
+^^^^^^^^^^^^^
+
+* `PR-3 <https://github.com/confluentinc/confluent-kafka-python/pull/3>`_ - Add /usr/local/lib to library_dirs in setup
+* `PR-4 <https://github.com/confluentinc/confluent-kafka-python/pull/4>`_ - Py3: use bytes for Message payload and key
+* `PR-5 <https://github.com/confluentinc/confluent-kafka-python/pull/5>`_ - Removed hard coded c extentions lib/include paths
+* `PR-9 <https://github.com/confluentinc/confluent-kafka-python/pull/9>`_ - Use consistent syntax highlighting (e.g. prefix commands with `$`)
+* `PR-17 <https://github.com/confluentinc/confluent-kafka-python/pull/17>`_ - Version bump to 0.9.1.2
+
+

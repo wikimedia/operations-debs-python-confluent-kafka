@@ -28,23 +28,26 @@
  ****************************************************************************/
 
 
-static int Consumer_clear (Consumer *self) {
-	if (self->on_assign) {
-		Py_DECREF(self->on_assign);
-		self->on_assign = NULL;
+static int Consumer_clear (Handle *self) {
+	if (self->u.Consumer.on_assign) {
+		Py_DECREF(self->u.Consumer.on_assign);
+		self->u.Consumer.on_assign = NULL;
 	}
-	if (self->on_revoke) {
-		Py_DECREF(self->on_revoke);
-		self->on_revoke = NULL;
+	if (self->u.Consumer.on_revoke) {
+		Py_DECREF(self->u.Consumer.on_revoke);
+		self->u.Consumer.on_revoke = NULL;
 	}
-	if (self->on_commit) {
-		Py_DECREF(self->on_commit);
-		self->on_commit = NULL;
+	if (self->u.Consumer.on_commit) {
+		Py_DECREF(self->u.Consumer.on_commit);
+		self->u.Consumer.on_commit = NULL;
 	}
+
+	Handle_clear(self);
+
 	return 0;
 }
 
-static void Consumer_dealloc (Consumer *self) {
+static void Consumer_dealloc (Handle *self) {
 	PyObject_GC_UnTrack(self);
 
 	Consumer_clear(self);
@@ -55,12 +58,17 @@ static void Consumer_dealloc (Consumer *self) {
 	Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static int Consumer_traverse (Consumer *self,
-				  visitproc visit, void *arg) {
-	if (self->on_assign)
-		Py_VISIT(self->on_assign);
-	if (self->on_revoke)
-		Py_VISIT(self->on_revoke);
+static int Consumer_traverse (Handle *self,
+			      visitproc visit, void *arg) {
+	if (self->u.Consumer.on_assign)
+		Py_VISIT(self->u.Consumer.on_assign);
+	if (self->u.Consumer.on_revoke)
+		Py_VISIT(self->u.Consumer.on_revoke);
+	if (self->u.Consumer.on_commit)
+		Py_VISIT(self->u.Consumer.on_commit);
+
+	Handle_traverse(self, visit, arg);
+
 	return 0;
 }
 
@@ -69,7 +77,7 @@ static int Consumer_traverse (Consumer *self,
 
 
 
-static PyObject *Consumer_subscribe (Consumer *self, PyObject *args,
+static PyObject *Consumer_subscribe (Handle *self, PyObject *args,
 					 PyObject *kwargs) {
 
 	rd_kafka_topic_partition_list_t *topics;
@@ -100,7 +108,7 @@ static PyObject *Consumer_subscribe (Consumer *self, PyObject *args,
 		return NULL;
 	}
 
-	topics = rd_kafka_topic_partition_list_new(PyList_Size(tlist));
+	topics = rd_kafka_topic_partition_list_new((int)PyList_Size(tlist));
 	for (pos = 0 ; pos < PyList_Size(tlist) ; pos++) {
 		PyObject *o = PyList_GetItem(tlist, pos);
 		PyObject *uo;
@@ -130,29 +138,29 @@ static PyObject *Consumer_subscribe (Consumer *self, PyObject *args,
 	/*
 	 * Update rebalance callbacks
 	 */
-	if (self->on_assign) {
-		Py_DECREF(self->on_assign);
-		self->on_assign = NULL;
+	if (self->u.Consumer.on_assign) {
+		Py_DECREF(self->u.Consumer.on_assign);
+		self->u.Consumer.on_assign = NULL;
 	}
 	if (on_assign) {
-		self->on_assign = on_assign;
-		Py_INCREF(self->on_assign);
+		self->u.Consumer.on_assign = on_assign;
+		Py_INCREF(self->u.Consumer.on_assign);
 	}
 
-	if (self->on_revoke) {
-		Py_DECREF(self->on_revoke);
-		self->on_revoke = NULL;
+	if (self->u.Consumer.on_revoke) {
+		Py_DECREF(self->u.Consumer.on_revoke);
+		self->u.Consumer.on_revoke = NULL;
 	}
 	if (on_revoke) {
-		self->on_revoke = on_revoke;
-		Py_INCREF(self->on_revoke);
+		self->u.Consumer.on_revoke = on_revoke;
+		Py_INCREF(self->u.Consumer.on_revoke);
 	}
 
 	Py_RETURN_NONE;
 }
 
 
-static PyObject *Consumer_unsubscribe (Consumer *self,
+static PyObject *Consumer_unsubscribe (Handle *self,
 					   PyObject *ignore) {
 
 	rd_kafka_resp_err_t err;
@@ -169,7 +177,7 @@ static PyObject *Consumer_unsubscribe (Consumer *self,
 }
 
 
-static PyObject *Consumer_assign (Consumer *self, PyObject *tlist) {
+static PyObject *Consumer_assign (Handle *self, PyObject *tlist) {
 
 	rd_kafka_topic_partition_list_t *c_parts;
 	rd_kafka_resp_err_t err;
@@ -177,7 +185,7 @@ static PyObject *Consumer_assign (Consumer *self, PyObject *tlist) {
 	if (!(c_parts = py_to_c_parts(tlist)))
 		return NULL;
 
-	self->rebalance_assigned++;
+	self->u.Consumer.rebalance_assigned++;
 
 	err = rd_kafka_assign(self->rk, c_parts);
 
@@ -185,7 +193,7 @@ static PyObject *Consumer_assign (Consumer *self, PyObject *tlist) {
 
 	if (err) {
 		cfl_PyErr_Format(err,
-				 "Failed to set assignemnt: %s",
+				 "Failed to set assignment: %s",
 				 rd_kafka_err2str(err));
 		return NULL;
 	}
@@ -194,11 +202,11 @@ static PyObject *Consumer_assign (Consumer *self, PyObject *tlist) {
 }
 
 
-static PyObject *Consumer_unassign (Consumer *self, PyObject *ignore) {
+static PyObject *Consumer_unassign (Handle *self, PyObject *ignore) {
 
 	rd_kafka_resp_err_t err;
 
-	self->rebalance_assigned++;
+	self->u.Consumer.rebalance_assigned++;
 
 	err = rd_kafka_assign(self->rk, NULL);
 	if (err) {
@@ -213,7 +221,7 @@ static PyObject *Consumer_unassign (Consumer *self, PyObject *ignore) {
 
 
 
-static PyObject *Consumer_commit (Consumer *self, PyObject *args,
+static PyObject *Consumer_commit (Handle *self, PyObject *args,
 					PyObject *kwargs) {
 
 	rd_kafka_resp_err_t err;
@@ -281,7 +289,7 @@ static PyObject *Consumer_commit (Consumer *self, PyObject *args,
 
 
 
-static PyObject *Consumer_committed (Consumer *self, PyObject *args,
+static PyObject *Consumer_committed (Handle *self, PyObject *args,
 					 PyObject *kwargs) {
 
 	PyObject *plist;
@@ -317,7 +325,7 @@ static PyObject *Consumer_committed (Consumer *self, PyObject *args,
 }
 
 
-static PyObject *Consumer_position (Consumer *self, PyObject *args,
+static PyObject *Consumer_position (Handle *self, PyObject *args,
 					PyObject *kwargs) {
 
 	PyObject *plist;
@@ -352,26 +360,23 @@ static PyObject *Consumer_position (Consumer *self, PyObject *args,
 
 
 
-static PyObject *Consumer_poll (Consumer *self, PyObject *args,
+static PyObject *Consumer_poll (Handle *self, PyObject *args,
 				    PyObject *kwargs) {
 	double tmout = -1.0f;
 	static char *kws[] = { "timeout", NULL };
 	rd_kafka_message_t *rkm;
 	PyObject *msgobj;
+	CallState cs;
 
 	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|d", kws, &tmout))
 		return NULL;
 
-	self->callback_crashed = 0;
-	self->thread_state = PyEval_SaveThread();
+	CallState_begin(self, &cs);
 
 	rkm = rd_kafka_consumer_poll(self->rk, tmout >= 0 ?
 				     (int)(tmout * 1000.0f) : -1);
 
-	PyEval_RestoreThread(self->thread_state);
-	self->thread_state = NULL;
-
-	if (self->callback_crashed)
+	if (!CallState_end(self, &cs))
 		return NULL;
 
 	if (!rkm)
@@ -384,10 +389,22 @@ static PyObject *Consumer_poll (Consumer *self, PyObject *args,
 }
 
 
-static PyObject *Consumer_close (Consumer *self, PyObject *ignore) {
-	self->thread_state = PyEval_SaveThread();
+static PyObject *Consumer_close (Handle *self, PyObject *ignore) {
+	CallState cs;
+	int raise = 0;
+
+	CallState_begin(self, &cs);
+
 	rd_kafka_consumer_close(self->rk);
-	PyEval_RestoreThread(self->thread_state);
+
+	raise = !CallState_end(self, &cs);
+
+	rd_kafka_destroy(self->rk);
+	self->rk = NULL;
+
+	if (raise)
+		return NULL;
+
 	Py_RETURN_NONE;
 }
 
@@ -523,7 +540,7 @@ static PyObject *Consumer_new (PyTypeObject *type, PyObject *args,
 PyTypeObject ConsumerType = {
 	PyVarObject_HEAD_INIT(NULL, 0)
 	"cimpl.Consumer",        /*tp_name*/
-	sizeof(Consumer),      /*tp_basicsize*/
+	sizeof(Handle),          /*tp_basicsize*/
 	0,                         /*tp_itemsize*/
 	(destructor)Consumer_dealloc, /*tp_dealloc*/
 	0,                         /*tp_print*/
@@ -584,14 +601,17 @@ PyTypeObject ConsumerType = {
 static void Consumer_rebalance_cb (rd_kafka_t *rk, rd_kafka_resp_err_t err,
 				   rd_kafka_topic_partition_list_t *c_parts,
 				   void *opaque) {
-	Consumer *self = opaque;
+	Handle *self = opaque;
+	CallState *cs;
 
-	PyEval_RestoreThread(self->thread_state);
+	cs = CallState_get(self);
 
-	self->rebalance_assigned = 0;
+	self->u.Consumer.rebalance_assigned = 0;
 
-	if ((err == RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS && self->on_assign) ||
-	    (err == RD_KAFKA_RESP_ERR__REVOKE_PARTITIONS && self->on_revoke)) {
+	if ((err == RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS &&
+	     self->u.Consumer.on_assign) ||
+	    (err == RD_KAFKA_RESP_ERR__REVOKE_PARTITIONS &&
+	     self->u.Consumer.on_revoke)) {
 		PyObject *parts;
 		PyObject *args, *result;
 
@@ -605,21 +625,22 @@ static void Consumer_rebalance_cb (rd_kafka_t *rk, rd_kafka_resp_err_t err,
 		if (!args) {
 			cfl_PyErr_Format(RD_KAFKA_RESP_ERR__FAIL,
 					 "Unable to build callback args");
-			self->thread_state = PyEval_SaveThread();
-			self->callback_crashed++;
+			CallState_crash(cs);
+			CallState_resume(cs);
 			return;
 		}
 
 		result = PyObject_CallObject(
 			err == RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS ?
-			self->on_assign : self->on_revoke, args);
+			self->u.Consumer.on_assign :
+			self->u.Consumer.on_revoke, args);
 
 		Py_DECREF(args);
 
 		if (result)
 			Py_DECREF(result);
 		else {
-			self->callback_crashed++;
+			CallState_crash(cs);
 			rd_kafka_yield(rk);
 		}
 	}
@@ -628,33 +649,37 @@ static void Consumer_rebalance_cb (rd_kafka_t *rk, rd_kafka_resp_err_t err,
 	 * to synchronize state, if the user did not do this from callback,
 	 * or there was no callback, or the callback failed, then we perform
 	 * that assign() call here instead. */
-	if (!self->rebalance_assigned) {
+	if (!self->u.Consumer.rebalance_assigned) {
 		if (err == RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS)
 			rd_kafka_assign(rk, c_parts);
 		else
 			rd_kafka_assign(rk, NULL);
 	}
 
-	self->thread_state = PyEval_SaveThread();
+	CallState_resume(cs);
 }
 
 
 static void Consumer_offset_commit_cb (rd_kafka_t *rk, rd_kafka_resp_err_t err,
 				       rd_kafka_topic_partition_list_t *c_parts,
 				       void *opaque) {
-	Consumer *self = opaque;
+	Handle *self = opaque;
 	PyObject *parts, *k_err, *args, *result;
+	CallState *cs;
 
-	if (!self->on_commit)
+	if (!self->u.Consumer.on_commit)
 		return;
 
-	PyEval_RestoreThread(self->thread_state);
+	cs = CallState_get(self);
 
 	/* Insantiate error object */
 	k_err = KafkaError_new_or_None(err, NULL);
 
 	/* Construct list of TopicPartition based on 'c_parts' */
-	parts = c_parts_to_py(c_parts);
+	if (c_parts)
+		parts = c_parts_to_py(c_parts);
+	else
+		parts = PyList_New(0);
 
 	args = Py_BuildValue("(OO)", k_err, parts);
 
@@ -664,39 +689,39 @@ static void Consumer_offset_commit_cb (rd_kafka_t *rk, rd_kafka_resp_err_t err,
 	if (!args) {
 		cfl_PyErr_Format(RD_KAFKA_RESP_ERR__FAIL,
 				 "Unable to build callback args");
-		self->thread_state = PyEval_SaveThread();
-		self->callback_crashed++;
+		CallState_crash(cs);
+		CallState_resume(cs);
 		return;
 	}
 
-	result = PyObject_CallObject(self->on_commit, args);
+	result = PyObject_CallObject(self->u.Consumer.on_commit, args);
 
 	Py_DECREF(args);
 
 	if (result)
 		Py_DECREF(result);
 	else {
-		self->callback_crashed++;
+		CallState_crash(cs);
 		rd_kafka_yield(rk);
 	}
 
-	self->thread_state = PyEval_SaveThread();
+	CallState_resume(cs);
 }
 
 
 
 static PyObject *Consumer_new (PyTypeObject *type, PyObject *args,
 				   PyObject *kwargs) {
-	Consumer *self;
+	Handle *self;
 	char errstr[256];
 	rd_kafka_conf_t *conf;
 
-	self = (Consumer *)ConsumerType.tp_alloc(&ConsumerType, 0);
+	self = (Handle *)ConsumerType.tp_alloc(&ConsumerType, 0);
 	if (!self)
 		return NULL;
 
 	if (!(conf = common_conf_setup(RD_KAFKA_CONSUMER, self,
-					   args, kwargs))) {
+				       args, kwargs))) {
 		Py_DECREF(self);
 		return NULL;
 	}

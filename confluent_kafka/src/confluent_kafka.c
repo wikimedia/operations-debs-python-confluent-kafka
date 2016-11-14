@@ -133,7 +133,7 @@ static PyObject* KafkaError_richcompare (KafkaError *self, PyObject *o2,
 	if (Py_TYPE(o2) == &KafkaErrorType)
 		code2 = ((KafkaError *)o2)->code;
 	else
-		code2 = PyLong_AsLong(o2);
+		code2 = (int)PyLong_AsLong(o2);
 
 	switch (op)
 	{
@@ -164,7 +164,7 @@ static PyObject* KafkaError_richcompare (KafkaError *self, PyObject *o2,
 	Py_INCREF(result);
 	return result;
 }
-				       
+
 
 static PyTypeObject KafkaErrorType = {
 	PyVarObject_HEAD_INIT(NULL, 0)
@@ -320,7 +320,7 @@ static PyObject *Message_partition (Message *self, PyObject *ignore) {
 
 static PyObject *Message_offset (Message *self, PyObject *ignore) {
 	if (self->offset >= 0)
-		return PyLong_FromLong(self->offset);
+		return PyLong_FromLongLong(self->offset);
 	else
 		Py_RETURN_NONE;
 }
@@ -560,7 +560,7 @@ static PyObject *TopicPartition_new (PyTypeObject *type, PyObject *args,
 
 	return TopicPartition_new0(topic, partition, offset, 0);
 }
-	
+
 
 
 static int TopicPartition_traverse (TopicPartition *self,
@@ -758,7 +758,7 @@ PyObject *c_parts_to_py (const rd_kafka_topic_partition_list_t *c_parts) {
 	}
 
 	return parts;
-		
+
 }
 
 /**
@@ -776,7 +776,7 @@ rd_kafka_topic_partition_list_t *py_to_c_parts (PyObject *plist) {
 		return NULL;
 	}
 
-	c_parts = rd_kafka_topic_partition_list_new(PyList_Size(plist));
+	c_parts = rd_kafka_topic_partition_list_new((int)PyList_Size(plist));
 
 	for (i = 0 ; i < PyList_Size(plist) ; i++) {
 		TopicPartition *tp = (TopicPartition *)
@@ -801,6 +801,40 @@ rd_kafka_topic_partition_list_t *py_to_c_parts (PyObject *plist) {
 }
 
 
+/****************************************************************************
+ *
+ *
+ * Common callbacks
+ *
+ *
+ *
+ *
+ ****************************************************************************/
+static void error_cb (rd_kafka_t *rk, int err, const char *reason, void *opaque) {
+	Handle *h = opaque;
+	PyObject *eo, *result;
+	CallState *cs;
+
+	cs = CallState_get(h);
+	if (!h->error_cb) {
+		/* No callback defined */
+		goto done;
+	}
+
+	eo = KafkaError_new0(err, "%s", reason);
+	result = PyObject_CallFunctionObjArgs(h->error_cb, eo, NULL);
+	Py_DECREF(eo);
+
+	if (result) {
+		Py_DECREF(result);
+	} else {
+		CallState_crash(cs);
+		rd_kafka_yield(h->rk);
+	}
+
+ done:
+	CallState_resume(cs);
+}
 
 
 /****************************************************************************
@@ -812,6 +846,30 @@ rd_kafka_topic_partition_list_t *py_to_c_parts (PyObject *plist) {
  *
  *
  ****************************************************************************/
+
+
+
+/**
+ * Clear Python object references in Handle
+ */
+void Handle_clear (Handle *h) {
+	if (h->error_cb) {
+		Py_DECREF(h->error_cb);
+	}
+
+	PyThread_delete_key(h->tlskey);
+}
+
+/**
+ * GC traversal for Python object references
+ */
+int Handle_traverse (Handle *h, visitproc visit, void *arg) {
+	if (h->error_cb)
+		Py_VISIT(h->error_cb);
+
+	return 0;
+}
+
 
 
 /**
@@ -879,7 +937,7 @@ static int populate_topic_conf (rd_kafka_topic_conf_t *tconf, const char *what,
  *
  * @returns 1 if handled, 0 if unknown, or -1 on failure (exception raised).
  */
-static int producer_conf_set_special (Producer *self, rd_kafka_conf_t *conf,
+static int producer_conf_set_special (Handle *self, rd_kafka_conf_t *conf,
 				      rd_kafka_topic_conf_t *tconf,
 				      const char *name, PyObject *valobj) {
 	PyObject *vs;
@@ -894,8 +952,8 @@ static int producer_conf_set_special (Producer *self, rd_kafka_conf_t *conf,
 			return -1;
 		}
 
-		self->default_dr_cb = valobj;
-		Py_INCREF(self->default_dr_cb);
+		self->u.Producer.default_dr_cb = valobj;
+		Py_INCREF(self->u.Producer.default_dr_cb);
 
 		return 1;
 
@@ -947,11 +1005,11 @@ static int producer_conf_set_special (Producer *self, rd_kafka_conf_t *conf,
 				return -1;
 			}
 
-			if (self->partitioner_cb)
-				Py_DECREF(self->partitioner_cb);
+			if (self->u.Producer.partitioner_cb)
+				Py_DECREF(self->u.Producer.partitioner_cb);
 
-			self->partitioner_cb = valobj;
-			Py_INCREF(self->partitioner_cb);
+			self->u.Producer.partitioner_cb = valobj;
+			Py_INCREF(self->u.Producer.partitioner_cb);
 
 			/* Use trampoline to call Python code. */
 			rd_kafka_topic_conf_set_partitioner_cb(tconf,
@@ -970,7 +1028,7 @@ static int producer_conf_set_special (Producer *self, rd_kafka_conf_t *conf,
  *
  * @returns 1 if handled, 0 if unknown, or -1 on failure (exception raised).
  */
-static int consumer_conf_set_special (Consumer *self, rd_kafka_conf_t *conf,
+static int consumer_conf_set_special (Handle *self, rd_kafka_conf_t *conf,
 				      rd_kafka_topic_conf_t *tconf,
 				      const char *name, PyObject *valobj) {
 
@@ -983,8 +1041,8 @@ static int consumer_conf_set_special (Consumer *self, rd_kafka_conf_t *conf,
 			return -1;
 		}
 
-		self->on_commit = valobj;
-		Py_INCREF(self->on_commit);
+		self->u.Consumer.on_commit = valobj;
+		Py_INCREF(self->u.Consumer.on_commit);
 
 		return 1;
 	}
@@ -1000,7 +1058,7 @@ static int consumer_conf_set_special (Consumer *self, rd_kafka_conf_t *conf,
  * an exception has been raised.
  */
 rd_kafka_conf_t *common_conf_setup (rd_kafka_type_t ktype,
-				    void *self0,
+				    Handle *h,
 				    PyObject *args,
 				    PyObject *kwargs) {
 	rd_kafka_conf_t *conf;
@@ -1053,15 +1111,25 @@ rd_kafka_conf_t *common_conf_setup (rd_kafka_type_t ktype,
 
 			Py_DECREF(ks);
 			continue;
+
+		} else if (!strcmp(k, "error_cb")) {
+			if (h->error_cb) {
+				Py_DECREF(h->error_cb);
+				h->error_cb = NULL;
+			}
+			if (vo != Py_None) {
+				h->error_cb = vo;
+				Py_INCREF(h->error_cb);
+			}
+			Py_DECREF(ks);
+			continue;
 		}
 
 		/* Special handling for certain config keys. */
 		if (ktype == RD_KAFKA_PRODUCER)
-			r = producer_conf_set_special((Producer *)self0,
-						      conf, tconf, k, vo);
+			r = producer_conf_set_special(h, conf, tconf, k, vo);
 		else
-			r = consumer_conf_set_special((Consumer *)self0,
-						      conf, tconf, k, vo);
+			r = consumer_conf_set_special(h, conf, tconf, k, vo);
 		if (r == -1) {
 			/* Error */
 			Py_DECREF(ks);
@@ -1104,15 +1172,72 @@ rd_kafka_conf_t *common_conf_setup (rd_kafka_type_t ktype,
 		Py_DECREF(ks);
 	}
 
-	rd_kafka_topic_conf_set_opaque(tconf, self0);
+	if (h->error_cb)
+		rd_kafka_conf_set_error_cb(conf, error_cb);
+	rd_kafka_topic_conf_set_opaque(tconf, h);
 	rd_kafka_conf_set_default_topic_conf(conf, tconf);
 
-	rd_kafka_conf_set_opaque(conf, self0);
+	rd_kafka_conf_set_opaque(conf, h);
+
+	h->tlskey = PyThread_create_key();
 
 	return conf;
 }
 
 
+
+
+/**
+ * @brief Initialiase a CallState and unlock the GIL prior to a
+ *        possibly blocking external call.
+ */
+void CallState_begin (Handle *h, CallState *cs) {
+	cs->thread_state = PyEval_SaveThread();
+	cs->crashed = 0;
+	PyThread_set_key_value(h->tlskey, cs);
+}
+
+/**
+ * @brief Relock the GIL after external call is done.
+ * @returns 0 if a Python signal was raised or a callback crashed, else 1.
+ */
+int CallState_end (Handle *h, CallState *cs) {
+	PyThread_delete_key_value(h->tlskey);
+
+	PyEval_RestoreThread(cs->thread_state);
+
+	if (PyErr_CheckSignals() == -1 || cs->crashed)
+		return 0;
+
+	return 1;
+}
+
+
+/**
+ * @brief Get the current thread's CallState and re-locks the GIL.
+ */
+CallState *CallState_get (Handle *h) {
+	CallState *cs = PyThread_get_key_value(h->tlskey);
+	assert(cs != NULL);
+	PyEval_RestoreThread(cs->thread_state);
+	cs->thread_state = NULL;
+	return cs;
+}
+
+/**
+ * @brief Un-locks the GIL to resume blocking external call.
+ */
+void CallState_resume (CallState *cs) {
+	assert(cs->thread_state == NULL);
+	cs->thread_state = PyEval_SaveThread();
+}
+
+/**
+ * @brief Indicate that call crashed.
+ */
+void CallState_crash (CallState *cs) {
+	cs->crashed++;
+}
 
 
 
@@ -1134,7 +1259,7 @@ static PyObject *libversion (PyObject *self, PyObject *args) {
 }
 
 static PyObject *version (PyObject *self, PyObject *args) {
-	return Py_BuildValue("si", "0.9.1", 0x00090100);
+	return Py_BuildValue("si", "0.9.2", 0x00090200);
 }
 
 static PyMethodDef cimpl_methods[] = {

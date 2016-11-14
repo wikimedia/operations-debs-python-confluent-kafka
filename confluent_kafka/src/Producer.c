@@ -46,7 +46,7 @@
  * Per-message state.
  */
 struct Producer_msgstate {
-	Producer *self;
+	Handle   *self;
 	PyObject *dr_cb;
 	PyObject *partitioner_cb;
 };
@@ -57,8 +57,8 @@ struct Producer_msgstate {
  * Returns NULL if neither dr_cb or partitioner_cb is set.
  */
 static __inline struct Producer_msgstate *
-Producer_msgstate_new (Producer *self,
-			   PyObject *dr_cb, PyObject *partitioner_cb) {
+Producer_msgstate_new (Handle *self,
+		       PyObject *dr_cb, PyObject *partitioner_cb) {
 	struct Producer_msgstate *msgstate;
 
 	if (!dr_cb && !partitioner_cb)
@@ -88,19 +88,22 @@ Producer_msgstate_destroy (struct Producer_msgstate *msgstate) {
 }
 
 
-static int Producer_clear (Producer *self) {
-	if (self->default_dr_cb) {
-		Py_DECREF(self->default_dr_cb);
-		self->default_dr_cb = NULL;
+static int Producer_clear (Handle *self) {
+	if (self->u.Producer.default_dr_cb) {
+		Py_DECREF(self->u.Producer.default_dr_cb);
+		self->u.Producer.default_dr_cb = NULL;
 	}
-	if (self->partitioner_cb) {
-		Py_DECREF(self->partitioner_cb);
-		self->partitioner_cb = NULL;
+	if (self->u.Producer.partitioner_cb) {
+		Py_DECREF(self->u.Producer.partitioner_cb);
+		self->u.Producer.partitioner_cb = NULL;
 	}
+
+	Handle_clear(self);
+
 	return 0;
 }
 
-static void Producer_dealloc (Producer *self) {
+static void Producer_dealloc (Handle *self) {
 	PyObject_GC_UnTrack(self);
 
 	Producer_clear(self);
@@ -111,12 +114,15 @@ static void Producer_dealloc (Producer *self) {
 	Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static int Producer_traverse (Producer *self,
-				  visitproc visit, void *arg) {
-	if (self->default_dr_cb)
-		Py_VISIT(self->default_dr_cb);
-	if (self->partitioner_cb)
-		Py_VISIT(self->partitioner_cb);
+static int Producer_traverse (Handle *self,
+			      visitproc visit, void *arg) {
+	if (self->u.Producer.default_dr_cb)
+		Py_VISIT(self->u.Producer.default_dr_cb);
+	if (self->u.Producer.partitioner_cb)
+		Py_VISIT(self->u.Producer.partitioner_cb);
+
+	Handle_traverse(self, visit, arg);
+
 	return 0;
 }
 
@@ -124,7 +130,8 @@ static int Producer_traverse (Producer *self,
 static void dr_msg_cb (rd_kafka_t *rk, const rd_kafka_message_t *rkm,
 			   void *opaque) {
 	struct Producer_msgstate *msgstate = rkm->_private;
-	Producer *self = opaque;
+	Handle *self = opaque;
+	CallState *cs;
 	PyObject *args;
 	PyObject *result;
 	PyObject *msgobj;
@@ -132,7 +139,7 @@ static void dr_msg_cb (rd_kafka_t *rk, const rd_kafka_message_t *rkm,
 	if (!msgstate)
 		return;
 
-	PyEval_RestoreThread(self->thread_state);
+	cs = CallState_get(self);
 
 	if (!msgstate->dr_cb) {
 		/* No callback defined */
@@ -150,7 +157,7 @@ static void dr_msg_cb (rd_kafka_t *rk, const rd_kafka_message_t *rkm,
 	if (!args) {
 		cfl_PyErr_Format(RD_KAFKA_RESP_ERR__FAIL,
 				 "Unable to build callback args");
-		self->callback_crashed++;
+		CallState_crash(cs);
 		goto done;
 	}
 
@@ -160,13 +167,13 @@ static void dr_msg_cb (rd_kafka_t *rk, const rd_kafka_message_t *rkm,
 	if (result)
 		Py_DECREF(result);
 	else {
-		self->callback_crashed++;
+		CallState_crash(cs);
 		rd_kafka_yield(rk);
 	}
 
  done:
 	Producer_msgstate_destroy(msgstate);
-	self->thread_state = PyEval_SaveThread();
+	CallState_resume(cs);
 }
 
 
@@ -178,7 +185,7 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 				 size_t keylen,
 				 int32_t partition_cnt,
 				 void *rkt_opaque, void *msg_opaque) {
-	Producer *self = rkt_opaque;
+	Handle *self = rkt_opaque;
 	struct Producer_msgstate *msgstate = msg_opaque;
 	PyGILState_STATE gstate;
 	PyObject *result;
@@ -188,9 +195,9 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 	if (!msgstate) {
 		/* Fall back on default C partitioner if neither a per-msg
 		 * partitioner nor a default Python partitioner is available */
-		return self->c_partitioner_cb(rkt, keydata, keylen,
-					      partition_cnt, rkt_opaque,
-					      msg_opaque);
+		return self->u.Producer.c_partitioner_cb(rkt, keydata, keylen,
+							 partition_cnt,
+							 rkt_opaque, msg_opaque);
 	}
 
 	gstate = PyGILState_Ensure();
@@ -198,9 +205,11 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 	if (!msgstate->partitioner_cb) {
 		/* Fall back on default C partitioner if neither a per-msg
 		 * partitioner nor a default Python partitioner is available */
-		r = msgstate->self->c_partitioner_cb(rkt, keydata, keylen,
-						     partition_cnt, rkt_opaque,
-						     msg_opaque);
+		r = msgstate->self->u.Producer.c_partitioner_cb(rkt,
+								keydata, keylen,
+								partition_cnt,
+								rkt_opaque,
+								msg_opaque);
 		goto done;
 	}
 
@@ -210,7 +219,6 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 	if (!args) {
 		cfl_PyErr_Format(RD_KAFKA_RESP_ERR__FAIL,
 				 "Unable to build callback args");
-		printf("Failed to build args\n");
 		goto done;
 	}
 
@@ -219,7 +227,7 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 	Py_DECREF(args);
 
 	if (result) {
-		r = PyLong_AsLong(result);
+		r = (int32_t)PyLong_AsLong(result);
 		if (PyErr_Occurred())
 			printf("FIXME: partition_cb returned wrong type "
 			       "(expected long), how to propagate?\n");
@@ -237,7 +245,7 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 
 
 
-static PyObject *Producer_produce (Producer *self, PyObject *args,
+static PyObject *Producer_produce (Handle *self, PyObject *args,
 				       PyObject *kwargs) {
 	const char *topic, *value = NULL, *key = NULL;
 	int value_len = 0, key_len = 0;
@@ -271,10 +279,10 @@ static PyObject *Producer_produce (Producer *self, PyObject *args,
 		return NULL;
 	}
 
-	if (!dr_cb)
-		dr_cb = self->default_dr_cb;
-	if (!partitioner_cb)
-		partitioner_cb = self->partitioner_cb;
+	if (!dr_cb || dr_cb == Py_None)
+		dr_cb = self->u.Producer.default_dr_cb;
+	if (!partitioner_cb || partitioner_cb == Py_None)
+		partitioner_cb = self->u.Producer.partitioner_cb;
 
 	/* Create msgstate if necessary, may return NULL if no callbacks
 	 * are wanted. */
@@ -311,28 +319,23 @@ static PyObject *Producer_produce (Producer *self, PyObject *args,
  * @returns -1 if callback crashed (or poll() failed), else the number
  * of events served.
  */
-static int Producer_poll0 (Producer *self, int tmout) {
+static int Producer_poll0 (Handle *self, int tmout) {
 	int r;
+	CallState cs;
 
-	self->callback_crashed = 0;
-	self->thread_state = PyEval_SaveThread();
+	CallState_begin(self, &cs);
 
 	r = rd_kafka_poll(self->rk, tmout);
 
-	PyEval_RestoreThread(self->thread_state);
-	self->thread_state = NULL;
-
-	if (PyErr_CheckSignals() == -1)
+	if (!CallState_end(self, &cs)) {
 		return -1;
-
-	if (self->callback_crashed)
-		return -1;
+	}
 
 	return r;
 }
 
 
-static PyObject *Producer_poll (Producer *self, PyObject *args,
+static PyObject *Producer_poll (Handle *self, PyObject *args,
 				    PyObject *kwargs) {
 	double tmout;
 	int r;
@@ -349,7 +352,7 @@ static PyObject *Producer_poll (Producer *self, PyObject *args,
 }
 
 
-static PyObject *Producer_flush (Producer *self, PyObject *ignore) {
+static PyObject *Producer_flush (Handle *self, PyObject *ignore) {
 	while (rd_kafka_outq_len(self->rk) > 0) {
 		if (Producer_poll0(self, 500) == -1)
 			return NULL;
@@ -367,7 +370,7 @@ static PyMethodDef Producer_methods[] = {
 	  "  This is an asynchronous operation, an application may use the "
 	  "``callback`` (alias ``on_delivery``) argument to pass a function "
 	  "(or lambda) that will be called from :py:func:`poll()` when the "
-	  "message has been succesfully delivered or permanently fails delivery.\n"
+	  "message has been successfully delivered or permanently fails delivery.\n"
 	  "\n"
 	  "  :param str topic: Topic to produce message to\n"
 	  "  :param str|bytes value: Message payload\n"
@@ -375,7 +378,7 @@ static PyMethodDef Producer_methods[] = {
 	  "  :param int partition: Partition to produce to, elses uses the "
 	  "configured partitioner.\n"
 	  "  :param func on_delivery(err,msg): Delivery report callback to call "
-	  "(from :py:func:`poll()` or :py:func:`flush()`) on succesful or "
+	  "(from :py:func:`poll()` or :py:func:`flush()`) on successful or "
 	  "failed delivery\n"
 	  "\n"
 	  "  :rtype: None\n"
@@ -415,7 +418,7 @@ static PyMethodDef Producer_methods[] = {
 };
 
 
-static Py_ssize_t Producer__len__ (Producer *self) {
+static Py_ssize_t Producer__len__ (Handle *self) {
 	return rd_kafka_outq_len(self->rk);
 }
 
@@ -431,7 +434,7 @@ static PyObject *Producer_new (PyTypeObject *type, PyObject *args,
 PyTypeObject ProducerType = {
 	PyVarObject_HEAD_INIT(NULL, 0)
 	"cimpl.Producer",        /*tp_name*/
-	sizeof(Producer),      /*tp_basicsize*/
+	sizeof(Handle),      /*tp_basicsize*/
 	0,                         /*tp_itemsize*/
 	(destructor)Producer_dealloc, /*tp_dealloc*/
 	0,                         /*tp_print*/
@@ -484,11 +487,11 @@ PyTypeObject ProducerType = {
 
 static PyObject *Producer_new (PyTypeObject *type, PyObject *args,
 				   PyObject *kwargs) {
-	Producer *self;
+	Handle *self;
 	char errstr[256];
 	rd_kafka_conf_t *conf;
 
-	self = (Producer *)ProducerType.tp_alloc(&ProducerType, 0);
+	self = (Handle *)ProducerType.tp_alloc(&ProducerType, 0);
 	if (!self)
 		return NULL;
 

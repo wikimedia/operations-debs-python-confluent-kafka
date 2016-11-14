@@ -16,6 +16,7 @@
 
 #include <Python.h>
 #include <structmember.h>
+#include <pythread.h>
 
 #include <librdkafka/rdkafka.h>
 
@@ -98,6 +99,88 @@ PyObject *KafkaError_new_or_None (rd_kafka_resp_err_t err, const char *str);
 		PyErr_SetObject(KafkaException, _eo);			\
 	} while (0)
 
+
+
+/****************************************************************************
+ *
+ *
+ * Common instance handle for both Producer and Consumer
+ *
+ *
+ *
+ *
+ ****************************************************************************/
+typedef struct {
+	PyObject_HEAD
+	rd_kafka_t *rk;
+	PyObject *error_cb;
+	int tlskey;  /* Thread-Local-Storage key */
+
+	union {
+		/**
+		 * Producer
+		 */
+		struct {
+			PyObject *default_dr_cb;
+			PyObject *partitioner_cb; /**< Registered Python partitioner */
+			int32_t (*c_partitioner_cb) (
+				const rd_kafka_topic_t *,
+				const void *, size_t, int32_t,
+				void *, void *);  /**< Fallback C partitioner*/
+		} Producer;
+
+		/**
+		 * Consumer
+		 */
+		struct {
+			int rebalance_assigned;  /* Rebalance: Callback performed assign() call.*/
+			PyObject *on_assign;     /* Rebalance: on_assign callback */
+			PyObject *on_revoke;     /* Rebalance: on_revoke callback */
+			PyObject *on_commit;     /* Commit callback */
+
+		} Consumer;
+	} u;
+} Handle;
+
+
+void Handle_clear (Handle *h);
+int  Handle_traverse (Handle *h, visitproc visit, void *arg);
+
+
+/**
+ * @brief Current thread's state for "blocking" calls to librdkafka.
+ */
+typedef struct {
+	PyThreadState *thread_state;
+	int crashed;   /* Callback crashed */
+} CallState;
+
+/**
+ * @brief Initialiase a CallState and unlock the GIL prior to a
+ *        possibly blocking external call.
+ */
+void CallState_begin (Handle *h, CallState *cs);
+/**
+ * @brief Relock the GIL after external call is done, remove TLS state.
+ * @returns 0 if a Python signal was raised or a callback crashed, else 1.
+ */
+int CallState_end (Handle *h, CallState *cs);
+
+/**
+ * @brief Get the current thread's CallState and re-locks the GIL.
+ */
+CallState *CallState_get (Handle *h);
+/**
+ * @brief Un-locks the GIL to resume blocking external call.
+ */
+void CallState_resume (CallState *cs);
+
+/**
+ * @brief Indicate that call crashed.
+ */
+void CallState_crash (CallState *cs);
+
+
 /****************************************************************************
  *
  *
@@ -108,9 +191,9 @@ PyObject *KafkaError_new_or_None (rd_kafka_resp_err_t err, const char *str);
  *
  ****************************************************************************/
 rd_kafka_conf_t *common_conf_setup (rd_kafka_type_t ktype,
-					void *self0,
-					PyObject *args,
-					PyObject *kwargs);
+				    Handle *h,
+				    PyObject *args,
+				    PyObject *kwargs);
 PyObject *c_parts_to_py (const rd_kafka_topic_partition_list_t *c_parts);
 rd_kafka_topic_partition_list_t *py_to_c_parts (PyObject *plist);
 
@@ -154,24 +237,8 @@ PyObject *Message_error (Message *self, PyObject *ignore);
  *
  ****************************************************************************/
 
-/**
- * @brief confluent_kafka.Producer object
- */
-typedef struct {
-	PyObject_HEAD
-	rd_kafka_t *rk;
-	PyObject *default_dr_cb;
-	PyObject *partitioner_cb; /**< Registered Python partitioner */
-	int32_t (*c_partitioner_cb) (
-		const rd_kafka_topic_t *,
-		const void *, size_t, int32_t,
-		void *, void *);  /**< Fallback C partitioner*/
-	int callback_crashed;
-	PyThreadState *thread_state;
-} Producer;
-
-
 extern PyTypeObject ProducerType;
+
 
 int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
 				 const void *keydata,
@@ -190,19 +257,4 @@ int32_t Producer_partitioner_cb (const rd_kafka_topic_t *rkt,
  *
  ****************************************************************************/
 
-/**
- * @brief confluent_kafka.Consumer object
- */
-typedef struct {
-	PyObject_HEAD
-	rd_kafka_t *rk;
-	int rebalance_assigned;  /* Rebalance: Callback performed assign() call.*/
-	PyObject *on_assign;     /* Rebalance: on_assign callback */
-	PyObject *on_revoke;     /* Rebalance: on_revoke callback */
-	PyObject *on_commit;     /* Commit callback */
-	int callback_crashed;
-	PyThreadState *thread_state;
-} Consumer;
-
-extern PyTypeObject ConsumerType ;
-
+extern PyTypeObject ConsumerType;
