@@ -1,3 +1,9 @@
+python-confluent-kafka (0.9.2-2) unstable; urgency=low
+
+  * Remove /usr/LICENSE
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Mon, 12 Dec 2016 15:49:00 +0000
+
 python-confluent-kafka (0.9.2-1) unstable; urgency=low
 
   * Upstream release of 0.9.2

@@ -1,0 +1,12 @@
+Index: python-confluent-kafka/setup.py
+===================================================================
+--- python-confluent-kafka.orig/setup.py
++++ python-confluent-kafka/setup.py
+@@ -17,5 +17,5 @@ setup(name='confluent-kafka',
+       author_email='support@confluent.io',
+       url='https://github.com/confluentinc/confluent-kafka-python',
+       ext_modules=[module],
+-      packages=find_packages(),
+-      data_files = [('', ['LICENSE'])])
++      packages=find_packages()
++)
