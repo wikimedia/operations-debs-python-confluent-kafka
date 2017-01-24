@@ -7,4 +7,3 @@ export PYBUILD_DISABLE_python3=test
 
 %:
 	dh $@ --with python2,python3 --buildsystem=pybuild
-
